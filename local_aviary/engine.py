@@ -101,16 +101,13 @@ class LocalTextGenerationInferenceEngine(TextGenerationInferenceEngine):
                 worker_group[0].can_infer_max_batch_total_tokens.remote()
             )
         )[0]
-        if can_infer_max_batch_total_tokens:
-            max_batch_total_tokens = None
-        else:
-            max_batch_total_tokens = self.task_selection_policy.max_batch_total_tokens
-            if not max_batch_total_tokens:
-                raise ValueError(
-                    f"Model {self.engine_config.model_id} cannot automatically infer max_batch_total_tokens. "
-                    "Make sure to set engine_config.scheduler.policy.max_batch_total_tokens in the model "
-                    "configuration yaml."
-                )
+        max_batch_total_tokens = self.task_selection_policy.max_batch_total_tokens
+        if not max_batch_total_tokens:
+            raise ValueError(
+                f"Model {self.engine_config.model_id} cannot automatically infer max_batch_total_tokens. "
+                "Make sure to set engine_config.scheduler.policy.max_batch_total_tokens in the model "
+                "configuration yaml."
+            )
 
         max_supported_total_tokens = await asyncio.gather(
             *[
