@@ -1,6 +1,9 @@
 import asyncio
 import traceback
-from typing import Any, AsyncGenerator, Dict, Type, Union
+from typing import Any, AsyncGenerator, Dict, Type, Union, Optional
+
+import async_timeout
+from ray import serve
 
 from aviary.backend.server.utils import EOS_SENTINELS
 
@@ -14,27 +17,25 @@ from pydantic import ValidationError as PydanticValidationError
 from ray.exceptions import RayActorError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
+from text_generation.types import Parameters
+
+from aviary.backend.logger import get_logger
+from aviary.backend.server.models import Args, AviaryModelResponse, Prompt
+from aviary.backend.server.utils import QueuePriority
+from aviary.common.models import ErrorResponse
 
 from .engine import LocalTextGenerationInferenceEngine
-from aviary.backend.server.execution_hooks import ExecutionHooks
-from aviary.backend.logger import get_logger
-from aviary.backend.server.models import (
-    Args,
-    AviaryModelResponse,
-    Prompt,
-)
-from aviary.backend.server.utils import QueuePriority
-from aviary.common.models import (
-    ErrorResponse,
-)
+
+REQUEST_TIMEOUT_S = 30
 
 logger = get_logger(__name__)
 
 model_app = FastAPI()
 
 
-# TODO: this file define the single model deployment 
+# TODO: this file define the single model deployment
 # TODO: local_aviary should have a run file to run the local deployment as well
+
 
 class SingleModelLLMDeployment:
     _default_engine_cls: Type[
@@ -63,6 +64,8 @@ class SingleModelLLMDeployment:
 
         self.args = new_args
         self.engine.engine_config = new_args.engine_config
+        self.default_parameters = new_args.engine_config.generation.generate_kwargs
+        self.default_stopping_sequences = new_args.engine_config.generation.stopping_sequences
         if should_reinit_worker_group:
             await self.engine.rollover(
                 self.args.air_scaling_config,
@@ -86,18 +89,92 @@ class SingleModelLLMDeployment:
             )
         }
 
-    # TODO Remove once we can stream from serve handles
+    @model_app.post("/generate")
+    async def generate_text(
+        self,
+        request: Request,
+        prompt: Annotated[str, Body()],
+        parameters: Annotated[Optional[Parameters], Body()]=None,
+        use_prompt_format: Annotated[Optional[bool], Body()] = False,
+        priority: Annotated[Optional[int], Body()]=QueuePriority.GENERATE_TEXT,
+    ):
+        generation_parameters = self.default_parameters.copy()
+        stopping_sequences = self.default_stopping_sequences.copy()
+        if parameters is not None:
+            generation_parameters.update(**parameters.dict())
+            stopping_sequences += parameters.stop
+        aviary_prompt = Prompt(
+            prompt=prompt,
+            parameters=generation_parameters,
+            stopping_sequences=stopping_sequences,
+            use_prompt_format=use_prompt_format,
+        )
+        try:
+            with async_timeout.timeout(REQUEST_TIMEOUT_S):
+                responses = []
+                async for t in self.generate_tokens(
+                    aviary_prompt,
+                    request=request,
+                    priority=QueuePriority(QueuePriority(priority)),
+                ):
+                    if isinstance(t, list):
+                        t = t[0]
+                    if t in EOS_SENTINELS:
+                        continue
+                    responses.append(t)
+                return AviaryModelResponse.merge_stream(*responses)
+
+        except Exception as e:
+            message = "".join(traceback.format_exception_only(type(e), e)).strip()
+            # TODO clean this up
+            if isinstance(e, PydanticValidationError):
+                error_code = 400
+            else:
+                error_code = getattr(e, "error_code", None)
+            if error_code:
+                logger.warning(f"Validation error caught while generating: {message}")
+            else:
+                logger.error(
+                    f"Exception caught while generating:\n{traceback.format_exc()}"
+                )
+            return (
+                AviaryModelResponse(
+                    error=ErrorResponse(
+                        message=message,
+                        internal_message=message,
+                        code=error_code or 500,
+                        type=e.__class__.__name__,
+                    ),
+                ).json()
+                + "\n"
+            )
+
     @model_app.post("/stream")
     async def generate_text_stream(
-        self, prompt: Prompt, request: Request, priority: Annotated[int, Body()]
+        self,
+        request: Request,
+        prompt: Annotated[str, Body()],
+        parameters: Annotated[Optional[Parameters], Body()]=None,
+        use_prompt_format: Annotated[Optional[bool], Body()] = False,
+        priority: Annotated[Optional[int], Body()]=QueuePriority.GENERATE_TEXT,
     ) -> StreamingResponse:
         self.engine.validate_prompt(prompt)
-
+        generation_parameters = self.default_parameters.copy()
+        stopping_sequences = self.default_stopping_sequences.copy()
+        if parameters is not None:
+            generation_parameters.update(**parameters.dict())
+            stopping_sequences += parameters.stop
+        aviary_prompt = Prompt(
+            prompt=prompt,
+            parameters=generation_parameters,
+            stopping_sequences=stopping_sequences,
+            use_prompt_format=use_prompt_format,
+        )
         async def wrapper():
             """Wrapper to always yield json-formatted strings"""
             try:
                 async for t in self.generate_tokens(
-                    prompt,
+                    aviary_prompt,
                     request,
                     priority=QueuePriority(priority),
                 ):
@@ -128,7 +205,7 @@ class SingleModelLLMDeployment:
                     ),
                 ).json() + "\n"
 
-        return StreamingResponse(wrapper(), media_type="text/event-stream")
+        return StreamingResponse(wrapper(), media_type="text/plain")
 
     async def _generate_token_stream(
         self,
@@ -190,3 +267,15 @@ class SingleModelLLMDeployment:
                     break
         finally:
             del self.requests_ids[curr_request_id]
+
+
+TextGenerationInferenceLLMDeployment = serve.deployment(
+    autoscaling_config={
+        "min_replicas": 1,
+        "initial_replicas": 1,
+        "max_replicas": 1,
+    },
+    max_concurrent_queries=10,  # Maximum backlog for a single replica
+    health_check_period_s=10,
+    health_check_timeout_s=30,
+)(serve.ingress(model_app)(SingleModelLLMDeployment))

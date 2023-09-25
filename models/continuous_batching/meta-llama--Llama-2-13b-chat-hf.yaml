@@ -13,18 +13,20 @@ deployment_config:
     upscale_delay_s: 60.0
   max_concurrent_queries: 2000
   ray_actor_options:
-    resources:
-      accelerator_type_a10: 0.01
+    resources: {}
+      # accelerator_type_a10: 0.01
 engine_config:
   model_id: meta-llama/Llama-2-13b-chat-hf
+  hf_model_id: /root/autodl-tmp/model_assets/Llama-2-13b-chat-hf
   type: TextGenerationInferenceEngine
   model_init_kwargs:
     trust_remote_code: true
   scheduler:
     policy:
-      max_batch_prefill_tokens: 9200
-      max_input_length: 4090
-      max_total_tokens: 4096
+      max_batch_total_tokens: 8192
+      max_batch_prefill_tokens: 4096
+      max_input_length: 1512
+      max_total_tokens: 2048
   generation:
     generate_kwargs:
       do_sample: true
@@ -39,9 +41,9 @@ engine_config:
       default_system_message: "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
     stopping_sequences: ["<unk>"]
 scaling_config:
-  num_workers: 4
+  num_workers: 2
   num_gpus_per_worker: 1
-  num_cpus_per_worker: 8
+  num_cpus_per_worker: 4
   placement_strategy: "STRICT_PACK"
-  resources_per_worker:
-    accelerator_type_a10: 0.01
+  resources_per_worker: {}
+    # accelerator_type_a10: 0.01

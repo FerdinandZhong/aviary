@@ -4,12 +4,13 @@ setup(
     name="aviary",
     version="0.2.0",
     description="A tool to deploy and query LLMs",
-    packages=find_packages(include="aviary*"),
+    packages=find_packages(include="*aviary*"),
     include_package_data=True,
     package_data={"aviary": ["models/*"]},
     entry_points={
         "console_scripts": [
             "aviary=aviary.cli:app",
+            "local_aviary=local_aviary.cli:app"
         ]
     },
     install_requires=[

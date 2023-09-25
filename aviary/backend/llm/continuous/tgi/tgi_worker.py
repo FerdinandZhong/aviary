@@ -362,7 +362,7 @@ class TGIInferenceWorker(AbstractInferenceWorker):
             download_weights(
                 model_id=self.model_id,
                 revision=self.revision,
-                trust_remote_code=self.trust_remote_code,
+                # trust_remote_code=self.trust_remote_code,
             )
 
         self._model = get_model(

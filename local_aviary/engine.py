@@ -1,8 +1,5 @@
 import asyncio
-import gc
-import os
-import time
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 import ray
 import ray.exceptions
@@ -18,23 +15,13 @@ from aviary.backend.llm.continuous.tokenizer import (
     CachingTokenizer,
     TransformersTokenizer,
 )
-from aviary.backend.llm.continuous.tokenstream import FinishReason
 from aviary.backend.llm.continuous.types import InferenceTask, Request, TGIParams
-from aviary.backend.llm.engine.tgi import TextGenerationInferenceEngine, AviaryTGIInferenceWorker
-from aviary.backend.llm.utils import (
-    _init_torch_distributed_env_vars_only,
-    init_torch_dist_process_group_async,
-    initialize_node,
-    merge_dicts,
+from aviary.backend.llm.engine.tgi import (
+    AviaryTGIInferenceWorker,
+    TextGenerationInferenceEngine,
 )
 from aviary.backend.logger import get_logger
-from aviary.backend.server.models import (
-    AviaryModelResponse,
-    TextGenerationInferenceEngineConfig,
-)
-from aviary.backend.server.utils import QueuePriority
-from aviary.common.models import Prompt
-from aviary.conf import ENV_VARS_TO_PROPAGATE
+from aviary.backend.server.models import TextGenerationInferenceEngineConfig
 
 try:
     from aviary.backend.llm.continuous.tgi.tgi_worker import (
@@ -95,12 +82,28 @@ class LocalTextGenerationInferenceEngine(TextGenerationInferenceEngine):
 
         logger.info("Warming up model on workers...")
 
-        # TODO: issue with flash-attn v2
+        # TODO: verify the implementation
         can_infer_max_batch_total_tokens = (
             await asyncio.gather(
                 worker_group[0].can_infer_max_batch_total_tokens.remote()
             )
         )[0]
+
+        logger.info(f"can infer max batch total tokens: {can_infer_max_batch_total_tokens}")
+        
+        # original code
+        # if can_infer_max_batch_total_tokens:
+        #     max_batch_total_tokens = None
+        # else:
+        #     max_batch_total_tokens = self.task_selection_policy.max_batch_total_tokens
+        #     if not max_batch_total_tokens:
+        #         raise ValueError(
+        #             f"Model {self.engine_config.model_id} cannot automatically infer max_batch_total_tokens. "
+        #             "Make sure to set engine_config.scheduler.policy.max_batch_total_tokens in the model "
+        #             "configuration yaml."
+        #         )
+
+        # updated code   
         max_batch_total_tokens = self.task_selection_policy.max_batch_total_tokens
         if not max_batch_total_tokens:
             raise ValueError(
@@ -227,7 +230,7 @@ class LocalTextGenerationInferenceEngine(TextGenerationInferenceEngine):
             logger.info("Task is over the max input length.")
             InputTooLong(
                 num_input_tokens, self.task_selection_policy.max_input_length
-            ).raise_exception() # TODO: add truncation option
+            ).raise_exception()  # TODO: add truncation option
 
         if "stopping_sequences" in sampling_params:
             sampling_params["stop_sequences"] = sampling_params.pop(
@@ -250,4 +253,3 @@ class LocalTextGenerationInferenceEngine(TextGenerationInferenceEngine):
         )
         self.scheduler.add_task(task)
         return task
-
